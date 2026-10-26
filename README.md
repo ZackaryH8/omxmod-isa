@@ -102,6 +102,26 @@ Report bugs through [GitHub issues](https://github.com/ZackaryH8/omxmod-isa/issu
 OMX version, map, vehicle, selected units and steps to reproduce. Do not upload credentials,
 your saved preferences, the SDK binaries, or OMSI content.
 
+## Releases
+
+Pushing a version tag such as `v1.0.3` runs the Release workflow. First set `version` in
+`omx-resource.json` to the same version and commit the change. The workflow runs the policy
+tests, builds against the public SDK, and publishes `omxmod-isa-1.0.3.zip` and its SHA-256
+checksum to GitHub Releases. The ZIP includes the mod, icons, documentation and attribution.
+SDK assemblies and debug symbols are excluded.
+
+Maintainers configure the build-only SDK once, or update it when a newer API is required.
+With Python 3, an authenticated GitHub CLI and repository admin access:
+
+```sh
+python3 tools/configure-release-sdk.py /path/to/OMX --repo ZackaryH8/omxmod-isa
+```
+
+This stores the two SDK assemblies in the `OMX_SDK_ARCHIVE` Actions secret without publishing
+them or granting the workflow access to the private engine repository. Release permissions
+are limited to the publish job. Use the workflow's **Run workflow** button with an existing tag
+to retry a release; reruns replace its ZIP and checksum while preserving its release notes.
+
 ## License
 
 Project code, scripts and documentation are [MIT licensed](LICENSE). OMX, OMSI and TfL material

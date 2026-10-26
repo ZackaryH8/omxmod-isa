@@ -1,0 +1,148 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to release (for example v1.0.2)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      ISA_RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    outputs:
+      tag: ${{ env.ISA_RELEASE_TAG }}
+      commit: ${{ steps.version.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.ISA_RELEASE_TAG }}
+          persist-credentials: false
+
+      - name: Validate tag and manifest version
+        id: version
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+          from pathlib import Path
+
+          tag = os.environ['ISA_RELEASE_TAG']
+          version = json.loads(Path('omx-resource.json').read_text())['version']
+          if not re.fullmatch(r'v\d+\.\d+\.\d+', tag) or tag != 'v' + version:
+              raise SystemExit(f'Tag {tag!r} must match manifest version v{version}.')
+          PY
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Test accelerator policy, units and grace period
+        run: dotnet test tests/Isa.Tests/Isa.Tests.csproj -c Release --verbosity minimal
+
+      - name: Restore build-only SDK
+        env:
+          OMX_SDK_ARCHIVE: ${{ secrets.OMX_SDK_ARCHIVE }}
+        run: |
+          python3 - <<'PY'
+          import base64, io, os, tarfile
+          from pathlib import Path
+
+          encoded = os.environ.get('OMX_SDK_ARCHIVE', '')
+          if not encoded:
+              raise SystemExit('Configure OMX_SDK_ARCHIVE using tools/configure-release-sdk.py first.')
+          root = Path(os.environ['RUNNER_TEMP']) / 'omx-sdk'
+          root.mkdir()
+          expected = {'OMX.ModAPI.Shared.dll', 'OMX.ModAPI.Client.dll'}
+          with tarfile.open(fileobj=io.BytesIO(base64.b64decode(encoded, validate=True)), mode='r:xz') as sdk:
+              members = sdk.getmembers()
+              if len(members) != len(expected) or {m.name for m in members} != expected:
+                  raise SystemExit('SDK archive must contain exactly the two public API assemblies.')
+              for member in members:
+                  if not member.isfile():
+                      raise SystemExit('SDK entries must be regular files.')
+                  with sdk.extractfile(member) as source:
+                      (root / member.name).write_bytes(source.read())
+          PY
+
+      - name: Build resource
+        run: >-
+          dotnet build IntelligentSpeedAssistance.csproj -c Release
+          -p:OmxSdkDirectory="$RUNNER_TEMP/omx-sdk" --verbosity minimal
+
+      - name: Package mod and checksum
+        run: |
+          python3 - <<'PY'
+          import hashlib, os, zipfile
+          from pathlib import Path
+
+          root = Path('bin/Release/net10.0/resource')
+          expected = {
+              'IntelligentSpeedAssistance.dll', 'IntelligentSpeedAssistance.deps.json',
+              'omx-resource.json', 'README.md', 'LICENSE', 'assets/README.md',
+              'assets/isa-green.png', 'assets/isa-white.png', 'assets/isa-amber.png',
+          }
+          files = {p.relative_to(root).as_posix(): p for p in root.rglob('*')
+                   if p.is_file() and p.suffix != '.pdb'}
+          if files.keys() != expected:
+              raise SystemExit(f'Unexpected package contents: {set(files) ^ expected}')
+          output = Path(os.environ['RUNNER_TEMP']) / 'isa-release'
+          output.mkdir()
+          archive = output / f"omxmod-isa-{os.environ['ISA_RELEASE_TAG'][1:]}.zip"
+          with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as package:
+              for name in sorted(files):
+                  entry = zipfile.ZipInfo('IntelligentSpeedAssistance/' + name)
+                  entry.compress_type = zipfile.ZIP_DEFLATED
+                  entry.external_attr = 0o100644 << 16
+                  package.writestr(entry, files[name].read_bytes())
+          digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+          archive.with_suffix('.zip.sha256').write_text(f'{digest}  {archive.name}\n')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: isa-release
+          path: ${{ runner.temp }}/isa-release/*
+          if-no-files-found: error
+          compression-level: 0
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: isa-release
+          path: ${{ runner.temp }}/isa-release
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ISA_RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          ISA_RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
+        run: |
+          remote_commit="$(gh api "repos/$GH_REPO/commits/$ISA_RELEASE_TAG" --jq '.sha')"
+          [[ "$remote_commit" == "$ISA_RELEASE_COMMIT" ]] || { echo 'Tag moved during the build; refusing to publish.' >&2; exit 1; }
+          archive="$RUNNER_TEMP/isa-release/omxmod-isa-${ISA_RELEASE_TAG#v}.zip"
+          if gh release view "$ISA_RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$ISA_RELEASE_TAG" "$archive" "$archive.sha256" --clobber
+          else
+            gh release create "$ISA_RELEASE_TAG" "$archive" "$archive.sha256" \
+              --verify-tag --target "$ISA_RELEASE_COMMIT" \
+              --title "ISA ${ISA_RELEASE_TAG#v}" --generate-notes
+          fi
