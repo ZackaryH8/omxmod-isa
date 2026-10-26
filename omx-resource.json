@@ -1,0 +1,16 @@
+{
+  "id": "intelligent-speed-assistance",
+  "name": "Intelligent Speed Assistance",
+  "version": "1.0.2",
+  "apiVersion": "2.1",
+  "permissions": [ "vehicle.control", "ui.hud", "storage" ],
+  "configuration": {
+    "enabled": true,
+    "speedUnit": "mph",
+    "approachBandKmh": 1.5,
+    "throttleRecoveryPerSecond": 2.0,
+    "showHud": true,
+    "roadDataGraceSeconds": 5.0
+  },
+  "client": { "assembly": "IntelligentSpeedAssistance.dll" }
+}

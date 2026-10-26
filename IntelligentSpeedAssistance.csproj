@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>IntelligentSpeedAssistance</AssemblyName>
+    <IsPackable>false</IsPackable>
+    <!-- OMX source checkouts build the SDK first; standalone clones use an installed SDK. -->
+    <OmxSourceDirectory Condition="'$(OmxSourceDirectory)' == '' And Exists('$(MSBuildThisFileDirectory)../../src/OMX.ModAPI.Client/OMX.ModAPI.Client.csproj')">$(MSBuildThisFileDirectory)../../</OmxSourceDirectory>
+    <OmxSdkDirectory Condition="'$(OmxSdkDirectory)' == ''">$(OMX_SDK_DIR)</OmxSdkDirectory>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(OmxSourceDirectory)' != ''">
+    <ProjectReference Include="$(OmxSourceDirectory)/src/OMX.ModAPI.Client/OMX.ModAPI.Client.csproj" Private="false" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(OmxSourceDirectory)' == ''">
+    <Reference Include="OMX.ModAPI.Shared" HintPath="$(OmxSdkDirectory)/OMX.ModAPI.Shared.dll" Private="false" />
+    <Reference Include="OMX.ModAPI.Client" HintPath="$(OmxSdkDirectory)/OMX.ModAPI.Client.dll" Private="false" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Remove="tests/**/*.cs" />
+    <None Remove="tests/**" />
+    <None Update="omx-resource.json;README.md" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="assets/*.png" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <Target Name="ValidateSdk" BeforeTargets="ResolveAssemblyReferences" Condition="'$(OmxSourceDirectory)' == ''">
+    <Error Condition="!Exists('$(OmxSdkDirectory)/OMX.ModAPI.Shared.dll') Or !Exists('$(OmxSdkDirectory)/OMX.ModAPI.Client.dll')"
+           Text="Set OMX_SDK_DIR or -p:OmxSdkDirectory to the directory containing OMX API 2.1+ SDK DLLs from your OMX installation." />
+  </Target>
+  <Target Name="ValidateIcons" BeforeTargets="BuildResourcePackage">
+    <Error Condition="!Exists('assets/isa-green.png') Or !Exists('assets/isa-white.png') Or !Exists('assets/isa-amber.png')"
+           Text="Reference icons are missing. Restore assets from Git or run bash tools/extract-icons.sh." />
+  </Target>
+  <Target Name="BuildResourcePackage" AfterTargets="Build">
+    <PropertyGroup>
+      <OmxResourceOutput>$(TargetDir)resource/</OmxResourceOutput>
+    </PropertyGroup>
+    <ItemGroup>
+      <ResourcePackageFile Include="$(TargetPath);$(TargetDir)$(AssemblyName).deps.json;$(TargetDir)$(AssemblyName).pdb;omx-resource.json;README.md;LICENSE" />
+      <ResourceAsset Include="assets/*.png;assets/README.md" />
+    </ItemGroup>
+    <MakeDir Directories="$(OmxResourceOutput)" />
+    <Copy SourceFiles="@(ResourcePackageFile)" DestinationFolder="$(OmxResourceOutput)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(ResourceAsset)" DestinationFolder="$(OmxResourceOutput)assets/" SkipUnchangedFiles="true" />
+    <Message Importance="high" Text="OMX ISA resource: $(OmxResourceOutput)" />
+  </Target>
+</Project>
